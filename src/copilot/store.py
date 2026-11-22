@@ -88,6 +88,8 @@ class Event:
     inicio: datetime
     fim: datetime
     local: str | None = None
+    rrule: str | None = None  # regra de recorrência do iCalendar (ex.: FREQ=WEEKLY;BYDAY=MO,WE)
+    exdates: tuple[datetime, ...] = ()  # ocorrências canceladas
 
     def as_dict(self) -> dict:
         return {"titulo": self.titulo, "inicio": self.inicio.isoformat(timespec="minutes"),
@@ -100,29 +102,72 @@ def _ics_dt(v: str) -> datetime:
 
 
 def read_ics(path: Path) -> list[Event]:
-    """Leitor mínimo de iCalendar (VEVENT com DTSTART/DTEND/SUMMARY/LOCATION; sem recorrência)."""
+    """Leitor mínimo de iCalendar: VEVENT com DTSTART/DTEND/SUMMARY/LOCATION, RRULE e EXDATE."""
     text = re.sub(r"\r?\n[ \t]", "", Path(path).read_text(encoding="utf-8"))  # desfaz linhas dobradas
     events = []
     for block in re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", text, re.S):
-        f = {}
+        f, exdates = {}, []
         for line in block.strip().splitlines():
             if ":" in line:
                 k, v = line.split(":", 1)
-                f[k.split(";")[0].upper()] = v.strip()
+                key = k.split(";")[0].upper()
+                if key == "EXDATE":
+                    exdates += [_ics_dt(x) for x in v.strip().split(",") if x]
+                else:
+                    f[key] = v.strip()
         if "DTSTART" in f:
             start = _ics_dt(f["DTSTART"])
             end = _ics_dt(f["DTEND"]) if "DTEND" in f else start + timedelta(hours=1)
-            events.append(Event(f.get("SUMMARY", "(sem título)"), start, end, f.get("LOCATION")))
+            events.append(Event(f.get("SUMMARY", "(sem título)"), start, end, f.get("LOCATION"),
+                                f.get("RRULE"), tuple(exdates)))
     return sorted(events, key=lambda e: e.inicio)
 
 
+def _occurrences(e: Event, day: date) -> list[Event]:
+    """Ocorrências de um evento recorrente que tocam o dia (expande a RRULE com python-dateutil)."""
+    from dateutil.rrule import rrulestr
+
+    dur = e.fim - e.inicio
+    regra = rrulestr(e.rrule.replace("Z", ""), dtstart=e.inicio, ignoretz=True)
+    ini = datetime.combine(day, datetime.min.time()) - dur
+    fim = datetime.combine(day, datetime.max.time())
+    out = []
+    for occ in regra.between(ini, fim, inc=True):
+        if occ in e.exdates or occ.date() in {x.date() for x in e.exdates if x.time() == datetime.min.time()}:
+            continue
+        o = Event(e.titulo, occ, occ + dur, e.local)
+        if o.inicio.date() <= day <= (o.fim - timedelta(seconds=1)).date():
+            out.append(o)
+    return out
+
+
 def events_on(events: list[Event], day: date) -> list[Event]:
-    return [e for e in events if e.inicio.date() <= day <= (e.fim - timedelta(seconds=1)).date()]
+    out = []
+    for e in events:
+        if e.rrule:
+            out += _occurrences(e, day)
+        elif e.inicio.date() <= day <= (e.fim - timedelta(seconds=1)).date():
+            out.append(e)
+    return sorted(out, key=lambda x: x.inicio)
+
+
+def working_hours() -> tuple[int, int]:
+    """Expediente para os horários livres: COPILOT_EXPEDIENTE="8-17" (padrão 9-18)."""
+    import os
+
+    raw = os.getenv("COPILOT_EXPEDIENTE", "9-18")
+    try:
+        ini, fim = (int(x) for x in raw.split("-"))
+    except ValueError as exc:
+        raise ValueError(f"COPILOT_EXPEDIENTE inválido: {raw!r} (use, por exemplo, 8-17)") from exc
+    if not 0 <= ini < fim <= 24:
+        raise ValueError(f"COPILOT_EXPEDIENTE inválido: {raw!r}")
+    return ini, fim
 
 
 def free_slots(events: list[Event], day: date, start_h: int = 9, end_h: int = 18, min_minutes: int = 30) -> list[dict]:
     cur = datetime.combine(day, datetime.min.time()).replace(hour=start_h)
-    end = cur.replace(hour=end_h)
+    end = datetime.combine(day, datetime.min.time()) + timedelta(hours=end_h)
     slots = []
     for e in sorted(events_on(events, day), key=lambda e: e.inicio):
         if e.inicio > cur and (e.inicio - cur).total_seconds() / 60 >= min_minutes:

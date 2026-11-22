@@ -40,6 +40,8 @@ flowchart LR
 | Componente | Status |
 |---|---|
 | Tarefas, notas, leitura de .ics (linhas dobradas, eventos de dia inteiro), horários livres, plano do dia | ✅ testado |
+| Eventos recorrentes (RRULE semanal/diária com BYDAY, COUNT, UNTIL, INTERVAL e EXDATE) e expediente configurável | ✅ testado |
+| Detector de injeção em código, medido em 36 textos (dev + teste separado) | ✅ medido no CI; veja abaixo |
 | Servidor MCP: ferramentas, resources e prompts | ✅ testado em processo **e por um cliente MCP real via stdio** |
 | Regras da extração (trecho literal, prazo no passado) | ✅ testado com LLM roteirizado |
 | Extração de tarefas com o **Gemini real** | ✅ 6 casos rotulados, 6/6 aprovados (`gemini-3.1-flash-lite`); veja a seção abaixo |
@@ -68,6 +70,19 @@ Na rodada final o próprio modelo já ignorou a ordem maliciosa, então o filtro
 
 Limites da validação: 6 casos, um modelo (o de menor custo), uma rodada por caso e saída não determinística. Mostra que o fluxo funciona com o Gemini real e onde ele falhou; não é uma medida de acurácia.
 
+## Detector de injeção: avaliação adversarial
+
+O filtro original pegava só frases no formato exato dos exemplos. Para medir isso, montei [`eval/injecoes.json`](eval/injecoes.json) com 36 textos rotulados à mão: injeções parafraseadas, em inglês, com leetspeak (`1gn0re`), letras separadas (`i-g-n-o-r-e`), escondidas em comentário HTML ou com "SISTEMA:", e textos legítimos parecidos ("ignore o e-mail anterior", "siga as instruções do manual"). Os textos estão divididos em **dev** (usado para ajustar as regras) e **teste** (separado, visto só depois do ajuste e não mexido depois). [`eval/detector_eval.py`](eval/detector_eval.py) roda sem chave e também no CI.
+
+| Versão | Dev: injeções pegas | Dev: falsos positivos | Teste: injeções pegas | Teste: falsos positivos |
+|---|---|---|---|---|
+| v1 (regex original) | 3/10 | 0/10 | 2/8 | 0/8 |
+| v2 (normalização + ordem dirigida ao modelo) | 10/10 | 0/10 | 8/8 | **1/8** |
+
+O falso positivo do teste é "Esqueci de mandar as instruções de acesso ao evento, seguem abaixo.": "esqueci… instruções" parece com "esqueça as instruções". Deixei sem corrigir de propósito, porque ajustar a regra olhando o conjunto de teste invalidaria a medida. Um falso positivo aqui custa pouco: a tarefa só deixa de ser sugerida e aparece em `descartadas` com o motivo.
+
+São 36 textos escritos por mim, então o número mede o detector contra os ataques que imaginei, não contra um atacante real. A defesa principal continua sendo que `extrair_tarefas` só sugere.
+
 ## Como usar
 
 ```bash
@@ -90,19 +105,22 @@ Configuração no cliente MCP (ex.: `claude_desktop_config.json`):
 }
 ```
 
+Horário de trabalho para os horários livres: `COPILOT_EXPEDIENTE=8-17` (padrão `9-18`); veja [`.env.example`](.env.example).
+
 Exemplos com [`samples/agenda.ics`](samples/agenda.ics) e [`samples/email.txt`](samples/email.txt): *"Revise meu dia 18/11"* ou *"Transforme este e-mail em tarefas"*.
 
 ## Limitações
 
-- O leitor de .ics não expande eventos recorrentes (RRULE).
-- Horário de trabalho fixo (9h às 18h) para calcular horários livres.
+- Recorrência: cobre o que o `python-dateutil` expande (FREQ, BYDAY, COUNT, UNTIL, INTERVAL, EXDATE). Fuso horário (`TZID`) é ignorado: os horários são lidos como locais, e exceções editadas (`RECURRENCE-ID`) não são tratadas.
+- O detector de injeção é uma heurística: 1 falso positivo em 8 textos legítimos do conjunto de teste e nenhuma medida contra ataques reais.
 - Sem sincronização: o .ics precisa ser exportado de novo para refletir mudanças.
 
 ## Roadmap
 
 - [ ] Ampliar o conjunto rotulado (hoje 6 casos) com e-mails e atas reais anonimizados e comparar modelos
 - [ ] Google Calendar (leitura) via OAuth, mantendo a escrita atrás de confirmação
-- [ ] Recorrência (RRULE) e horário de trabalho configurável
+- [x] Recorrência (RRULE) e horário de trabalho configurável
+- [ ] Fuso horário (`TZID`) e exceções `RECURRENCE-ID` no .ics
 
 ---
 

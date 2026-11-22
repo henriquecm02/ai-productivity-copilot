@@ -10,3 +10,5 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: pytest -q
+      - name: Detector de injeção (dev e teste separado)
+        run: python eval/detector_eval.py

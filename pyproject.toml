@@ -9,7 +9,7 @@ description = "Copiloto de produtividade via MCP: tarefas, notas, agenda e extra
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = ["mcp>=2", "google-genai>=1.0", "python-dotenv>=1.0"]
+dependencies = ["mcp>=2", "google-genai>=1.0", "python-dotenv>=1.0", "python-dateutil>=2.8"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -22,3 +22,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 280
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
